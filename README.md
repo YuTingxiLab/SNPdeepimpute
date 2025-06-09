@@ -1,4 +1,4 @@
-# STICI
+# DeepImpute
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14451462.svg)](https://doi.org/10.5281/zenodo.14451462)
 
@@ -10,9 +10,9 @@ Split-Transformer with Integrated Convolutions for Genotype Imputation source co
   <img width="100%" height="auto" src="https://github.com/shilab/STICI/blob/d0da6cddeb071ef41117936467e2297a999de286/architecture.png">
 </p>
 
-## Overal workflow of STICI in pseudocode
+## Overal workflow of DeepImpute in pseudocode
 ```
-PROGRAM STICI:
+PROGRAM DeepImpute:
   Read the data;
   Perform one-hot encoding on the data;
   Partition the data into training, validation, and test sets;
