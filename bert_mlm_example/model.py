@@ -3,8 +3,8 @@ from torch import nn
 
 
 class BertMLM(nn.Module):
-    def __init__(self, vocab_size: int, hidden_size: int = 256, num_layers: int = 2, num_heads: int = 4,
-                 max_length: int = 32):
+    def __init__(self, vocab_size: int, hidden_size: int = 256, num_layers: int = 2,
+                 num_heads: int = 4, max_length: int = 32):
         super().__init__()
         self.hidden_size = hidden_size
         self.token_emb = nn.Embedding(vocab_size, hidden_size)
@@ -15,6 +15,11 @@ class BertMLM(nn.Module):
 
     def forward(self, input_ids, attention_mask=None):
         seq_length = input_ids.size(1)
+        if seq_length > self.pos_emb.num_embeddings:
+            raise ValueError(
+                f"Sequence length {seq_length} exceeds maximum position embeddings "
+                f"{self.pos_emb.num_embeddings}."
+            )
         position_ids = torch.arange(seq_length, dtype=torch.long, device=input_ids.device)
         position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
         x = self.token_emb(input_ids) + self.pos_emb(position_ids)

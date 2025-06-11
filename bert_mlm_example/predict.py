@@ -1,11 +1,15 @@
+import json
 import torch
 from tokenizer import SimpleTokenizer
 from model import BertMLM
 
 
-def fill_mask(sentence: str, model_path='models/mlm_model.pth', tokenizer_path='data/tokenizer_vcf.json', max_length: int = 32):
+def fill_mask(sentence: str, model_path='models/mlm_model.pth', tokenizer_path='data/tokenizer_vcf.json',
+              data_path='data/dataset_vcf.json'):
+    with open(data_path) as f:
+        max_length = len(json.load(f)['input_ids'][0])
     tokenizer = SimpleTokenizer.load(tokenizer_path, max_length=max_length)
-    model = BertMLM(vocab_size=len(tokenizer.vocab))
+    model = BertMLM(vocab_size=len(tokenizer.vocab), max_length=max_length)
     model.load_state_dict(torch.load(model_path))
     model.eval()
     ids, attention = tokenizer.encode(sentence)

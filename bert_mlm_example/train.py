@@ -37,12 +37,13 @@ def mask_tokens(inputs, tokenizer, mlm_probability=0.15):
 
 
 def train(data_path='data/dataset_vcf.json', tokenizer_path='data/tokenizer_vcf.json',
-          model_out='models/mlm_model.pth', epochs=5, batch_size=4, lr=5e-4):
-    tokenizer = SimpleTokenizer.load(tokenizer_path)
+         model_out='models/mlm_model.pth', epochs=5, batch_size=4, lr=5e-4):
     dataset = MLMDataset(data_path)
+    max_length = len(dataset.input_ids[0])
+    tokenizer = SimpleTokenizer.load(tokenizer_path, max_length=max_length)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    model = BertMLM(vocab_size=len(tokenizer.vocab))
+    model = BertMLM(vocab_size=len(tokenizer.vocab), max_length=max_length)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = torch.nn.CrossEntropyLoss()
     model.train()
