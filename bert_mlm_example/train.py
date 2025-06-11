@@ -1,6 +1,6 @@
 import json
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 from tokenizer import SimpleTokenizer
 from model import BertMLM
 
@@ -41,15 +41,29 @@ def train(data_path='data/dataset_vcf.json', tokenizer_path='data/tokenizer_vcf.
     dataset = MLMDataset(data_path)
     max_length = len(dataset.input_ids[0])
     tokenizer = SimpleTokenizer.load(tokenizer_path, max_length=max_length)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
     model = BertMLM(vocab_size=len(tokenizer.vocab), max_length=max_length)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = torch.nn.CrossEntropyLoss()
-    model.train()
+    
+    def accuracy(logits, labels):
+        preds = logits.argmax(dim=-1)
+        mask = labels != -100
+        correct = (preds[mask] == labels[mask]).sum().item()
+        total = mask.sum().item()
+        return correct, total
+
     for epoch in range(epochs):
-        total_loss = 0.0
-        for batch in dataloader:
+        model.train()
+        train_loss = 0.0
+        train_correct = 0
+        train_total = 0
+        for batch in train_loader:
             inputs = batch['input_ids']
             attention_mask = batch['attention_mask']
             inputs, labels = mask_tokens(inputs, tokenizer)
@@ -58,9 +72,34 @@ def train(data_path='data/dataset_vcf.json', tokenizer_path='data/tokenizer_vcf.
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            total_loss += loss.item()
-        avg_loss = total_loss / len(dataloader)
-        print(f"Epoch {epoch+1} - Loss: {avg_loss:.4f}")
+            train_loss += loss.item()
+            c, t = accuracy(logits, labels)
+            train_correct += c
+            train_total += t
+        train_loss /= len(train_loader)
+        train_acc = train_correct / train_total if train_total else 0.0
+
+        model.eval()
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+        with torch.no_grad():
+            for batch in val_loader:
+                inputs = batch['input_ids']
+                attention_mask = batch['attention_mask']
+                inputs, labels = mask_tokens(inputs, tokenizer)
+                logits = model(inputs, attention_mask=attention_mask)
+                loss = loss_fn(logits.view(-1, logits.size(-1)), labels.view(-1))
+                val_loss += loss.item()
+                c, t = accuracy(logits, labels)
+                val_correct += c
+                val_total += t
+        val_loss /= len(val_loader)
+        val_acc = val_correct / val_total if val_total else 0.0
+        print(
+            f"Epoch {epoch+1} - Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} "
+            f"| Val Loss: {val_loss:.4f} Acc: {val_acc:.4f}"
+        )
     torch.save(model.state_dict(), model_out)
     print(f"Model saved to {model_out}")
 
