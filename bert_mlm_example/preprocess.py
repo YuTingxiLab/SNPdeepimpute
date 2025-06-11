@@ -5,9 +5,10 @@ import numpy as np
 
 
 def read_vcf_haplotypes(path):
-    """Read VCF and return haplotype array of shape (samples*2, snps)."""
+    """Read VCF and return haplotype array and encountered allele values."""
     sample_names = []
-    haplotypes1 = []
+    haplotypes = []
+    allele_set = set()
     with open(path) as f:
         for line in f:
             if line.startswith('##'):
@@ -15,7 +16,7 @@ def read_vcf_haplotypes(path):
             if line.startswith('#CHROM'):
                 header = line.strip().split('\t')
                 sample_names = header[9:]
-                haplotypes1 = [[] for _ in range(len(sample_names)*2)]
+                haplotypes = [[] for _ in range(len(sample_names) * 2)]
                 continue
             if line.startswith('#'):
                 continue
@@ -27,24 +28,32 @@ def read_vcf_haplotypes(path):
                     a, b = gt.split('|')
                 else:
                     a, b = gt.split('/')
-                haplotypes1[2*idx].append(int(a))
-                haplotypes1[2*idx+1].append(int(b))
-    return np.array(haplotypes1, dtype=np.int64)
+                a = int(a) if a.isdigit() else 0
+                b = int(b) if b.isdigit() else 0
+                haplotypes[2 * idx].append(a)
+                haplotypes[2 * idx + 1].append(b)
+                allele_set.add(a)
+                allele_set.add(b)
+    allele_values = sorted(allele_set)
+    return np.array(haplotypes, dtype=np.int64), allele_values
 
 
-def one_hot_encode(haps, mask_prob=0.15):
-    """Return masked inputs and labels in one-hot form."""
+def one_hot_encode(haps, allele_values, mask_prob=0.15):
+    """Return masked inputs and labels in one-hot form using allele values."""
+    allele_to_idx = {v: i for i, v in enumerate(allele_values)}
+    num_classes = len(allele_values)
     N, L = haps.shape
-    inputs = np.zeros((N, L, 6), dtype=np.float32)
-    labels = np.zeros((N, L, 5), dtype=np.float32)
+    inputs = np.zeros((N, L, num_classes + 1), dtype=np.float32)
+    labels = np.zeros((N, L, num_classes), dtype=np.float32)
     for i in range(N):
         for j in range(L):
             allele = haps[i, j]
-            labels[i, j, allele] = 1.0
+            idx = allele_to_idx[allele]
+            labels[i, j, idx] = 1.0
             if random.random() < mask_prob:
-                inputs[i, j, 5] = 1.0
+                inputs[i, j, num_classes] = 1.0
             else:
-                inputs[i, j, allele] = 1.0
+                inputs[i, j, idx] = 1.0
     return inputs, labels
 
 
@@ -56,11 +65,15 @@ def main():
     parser.add_argument('--mask_prob', type=float, default=0.15)
     args = parser.parse_args()
 
-    haps = read_vcf_haplotypes(args.input)
-    inputs, labels = one_hot_encode(haps, mask_prob=args.mask_prob)
+    haps, allele_values = read_vcf_haplotypes(args.input)
+    inputs, labels = one_hot_encode(haps, allele_values, mask_prob=args.mask_prob)
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    torch.save({'inputs': torch.tensor(inputs), 'labels': torch.tensor(labels)}, args.output)
-    print(f'Saved dataset to {args.output} with shape {inputs.shape}')
+    torch.save({
+        'inputs': torch.tensor(inputs),
+        'labels': torch.tensor(labels),
+        'allele_values': allele_values
+    }, args.output)
+    print(f'Saved dataset to {args.output} with shape {inputs.shape} and {len(allele_values)} allele types')
 
 
 if __name__ == '__main__':

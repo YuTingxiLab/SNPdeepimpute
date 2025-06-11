@@ -10,6 +10,9 @@ class SNPDataset(Dataset):
         data = torch.load(path)
         self.inputs = data['inputs']
         self.labels = data['labels']
+        self.allele_values = data.get('allele_values')
+        self.input_dim = self.inputs.size(-1)
+        self.num_classes = self.labels.size(-1)
 
     def __len__(self):
         return self.inputs.size(0)
@@ -20,7 +23,7 @@ class SNPDataset(Dataset):
 
 def vae_loss(logits, labels, mu, logvar):
     target = labels.argmax(dim=-1)
-    ce = F.cross_entropy(logits.view(-1, 5), target.view(-1))
+    ce = F.cross_entropy(logits.view(-1, logits.size(-1)), target.view(-1))
     kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
     return ce + kl, ce, kl
 
@@ -35,7 +38,11 @@ def train(data_path='data/dataset.pt', model_out='models/mlm_model.pt', epochs=5
     val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
     seq_len = dataset.inputs.size(1)
-    model = LongformerMLMVAE(max_length=seq_len)
+    model = LongformerMLMVAE(
+        input_dim=dataset.input_dim,
+        num_classes=dataset.num_classes,
+        max_length=seq_len
+    )
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     for epoch in range(epochs):

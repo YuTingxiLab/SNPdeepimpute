@@ -4,12 +4,13 @@ from transformers import LongformerModel, LongformerConfig
 
 
 class LongformerMLMVAE(nn.Module):
-    def __init__(self, input_dim=6, hidden_size=128, num_layers=2, num_heads=4,
-                 max_length=1000, attention_window=64):
+    def __init__(self, input_dim, num_classes, hidden_size=128, num_layers=2,
+                 num_heads=4, max_length=1000, attention_window=64):
         super().__init__()
         self.embed = nn.Linear(input_dim, hidden_size)
         config = LongformerConfig(
             vocab_size=1,
+            pad_token_id=0,
             hidden_size=hidden_size,
             num_hidden_layers=num_layers,
             num_attention_heads=num_heads,
@@ -20,10 +21,10 @@ class LongformerMLMVAE(nn.Module):
         self.encoder = LongformerModel(config)
         self.fc_mu = nn.Linear(hidden_size, hidden_size)
         self.fc_logvar = nn.Linear(hidden_size, hidden_size)
-        self.decoder = nn.Linear(hidden_size, 5)
+        self.decoder = nn.Linear(hidden_size, num_classes)
 
     def forward(self, inputs, attention_mask=None):
-        # inputs: [batch, seq_len, 6]
+        # inputs: [batch, seq_len, input_dim]
         x = self.embed(inputs)
         outputs = self.encoder(inputs_embeds=x, attention_mask=attention_mask)
         h = outputs.last_hidden_state

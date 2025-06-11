@@ -3,20 +3,22 @@ from model import LongformerMLMVAE
 from preprocess import read_vcf_haplotypes, one_hot_encode
 
 
-def load_model(model_path, seq_len):
-    model = LongformerMLMVAE(max_length=seq_len)
+def load_model(model_path, input_dim, num_classes, seq_len):
+    model = LongformerMLMVAE(input_dim=input_dim, num_classes=num_classes, max_length=seq_len)
     state = torch.load(model_path)
     model.load_state_dict(state)
     model.eval()
     return model
 
 
-def fill_vcf(vcf_path, output_path='filled.vcf', model_path='models/mlm_model.pt'):
-    haps = read_vcf_haplotypes(vcf_path)
-    inputs, _ = one_hot_encode(haps, mask_prob=0.0)
+def fill_vcf(vcf_path, dataset_path='data/dataset.pt', output_path='filled.vcf', model_path='models/mlm_model.pt'):
+    haps, allele_values = read_vcf_haplotypes(vcf_path)
+    data = torch.load(dataset_path)
+    train_alleles = data['allele_values']
+    inputs, _ = one_hot_encode(haps, train_alleles, mask_prob=0.0)
     inputs = torch.tensor(inputs)
     mask = (inputs.sum(-1) != 0).long()
-    model = load_model(model_path, seq_len=inputs.size(1))
+    model = load_model(model_path, input_dim=inputs.size(-1), num_classes=len(train_alleles), seq_len=inputs.size(1))
     with torch.no_grad():
         logits, _, _ = model(inputs, attention_mask=mask)
     preds = logits.argmax(dim=-1)
@@ -31,8 +33,8 @@ def fill_vcf(vcf_path, output_path='filled.vcf', model_path='models/mlm_model.pt
             fields = line.strip().split('\t')
             gts = []
             for s in range(num_samples):
-                a = preds[2*s, snp_idx].item()
-                b = preds[2*s+1, snp_idx].item()
+                a = train_alleles[preds[2*s, snp_idx].item()]
+                b = train_alleles[preds[2*s+1, snp_idx].item()]
                 gts.append(f'{a}|{b}')
             new_lines.append('\t'.join(fields[:9] + gts))
             snp_idx += 1
@@ -46,7 +48,8 @@ if __name__ == '__main__':
     import argparse
     p = argparse.ArgumentParser(description='Fill masked VCF')
     p.add_argument('--vcf', required=True)
+    p.add_argument('--dataset', default='data/dataset.pt')
     p.add_argument('--output', default='filled.vcf')
     p.add_argument('--model_path', default='models/mlm_model.pt')
     args = p.parse_args()
-    fill_vcf(args.vcf, args.output, args.model_path)
+    fill_vcf(args.vcf, dataset_path=args.dataset, output_path=args.output, model_path=args.model_path)
