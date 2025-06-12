@@ -1,37 +1,30 @@
 import os
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
-import torch.nn.functional as F
 from model import LongformerMLMVAE
+from losses import VAELoss
 
 
 class SNPDataset(Dataset):
     def __init__(self, path):
         data = torch.load(path)
-        self.input_ids = data['inputs'].long()
-        self.labels = data['labels'].long()
+        self.inputs = data['inputs'].float()
+        self.labels = data['labels'].float()
         self.allele_values = data.get('allele_values', [])
-        self.mask_idx = data.get('mask_idx', len(self.allele_values))
-        self.vocab_size = len(self.allele_values) + 1
-        self.num_classes = len(self.allele_values)
-        self.seq_len = data.get('seq_len', self.input_ids.size(1))
+        self.num_alleles = data.get('num_alleles', self.inputs.size(-1))
+        self.num_classes = self.num_alleles - 1
+        self.seq_len = data.get('seq_len', self.inputs.size(1))
 
     def __len__(self):
-        return self.input_ids.size(0)
+        return self.inputs.size(0)
 
     def __getitem__(self, idx):
-        return self.input_ids[idx], self.labels[idx]
-
-
-def vae_loss(logits, labels, mu, logvar, kl_weight=1.0):
-    ce = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
-    kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-    return ce + kl_weight * kl, ce, kl
-
+        return self.inputs[idx], self.labels[idx]
 
 def accuracy(logits, labels):
     preds = logits.argmax(dim=-1)
-    return (preds == labels).float().mean()
+    targets = labels.argmax(dim=-1)
+    return (preds == targets).float().mean()
 
 
 def train(
@@ -42,6 +35,7 @@ def train(
     lr=5e-4,
     max_position_embeddings=None,
     kl_anneal_epochs=2,
+    chunk_size=None,
 ):
     dataset = SNPDataset(data_path)
     train_size = int(0.8 * len(dataset))
@@ -52,11 +46,12 @@ def train(
 
     seq_len = dataset.seq_len
     model = LongformerMLMVAE(
-        vocab_size=dataset.vocab_size,
-        num_classes=dataset.num_classes,
+        num_alleles=dataset.num_alleles,
         max_length=max_position_embeddings or seq_len,
+        chunk_size=chunk_size,
     )
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    criterion = VAELoss()
 
     best_val = float('inf')
     patience = 3
@@ -68,9 +63,9 @@ def train(
         tot_acc = 0.0
         kl_weight = min(1.0, (epoch + 1) / max(1, kl_anneal_epochs))
         for x, y in train_loader:
-            mask = (x != dataset.mask_idx).long()
+            mask = 1 - x[:, :, -1].long()
             logits, mu, logvar = model(x, attention_mask=mask)
-            loss, ce, kl = vae_loss(logits, y, mu, logvar, kl_weight=kl_weight)
+            loss, ce, kl = criterion(logits, y, mu, logvar, kl_weight=kl_weight)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -84,9 +79,9 @@ def train(
         val_acc = 0.0
         with torch.no_grad():
             for x, y in val_loader:
-                mask = (x != dataset.mask_idx).long()
+                mask = 1 - x[:, :, -1].long()
                 logits, mu, logvar = model(x, attention_mask=mask)
-                loss, _, _ = vae_loss(logits, y, mu, logvar, kl_weight=1.0)
+                loss, _, _ = criterion(logits, y, mu, logvar, kl_weight=1.0)
                 val_loss += loss.item()
                 val_acc += accuracy(logits, y).item()
         val_loss /= len(val_loader)

@@ -2,6 +2,7 @@ import os
 import random
 import torch
 import numpy as np
+import torch.nn.functional as F
 
 
 def read_vcf_haplotypes(path):
@@ -38,47 +39,70 @@ def read_vcf_haplotypes(path):
     return np.array(haplotypes, dtype=np.int64), allele_values
 
 
-def build_token_dataset(haps, allele_values, mask_prob=0.15):
-    """Return masked input IDs and label IDs."""
+def add_attention_mask(x_sample, y_sample, depth, min_mr, max_mr):
+    """Mask random positions and return one-hot encoded x and y."""
+    if not torch.is_tensor(x_sample):
+        x_sample = torch.tensor(x_sample).long()
+    if not torch.is_tensor(y_sample):
+        y_sample = torch.tensor(y_sample).long()
+
+    seq_len = len(x_sample)
+    masking_rate = torch.empty(1).uniform_(min_mr, max_mr).item()
+    mask_size = int(seq_len * masking_rate)
+
+    mask_idx = torch.randperm(seq_len)[:mask_size]
+
+    x_masked = x_sample.clone()
+    x_masked[mask_idx] = depth - 1
+
+    x_onehot = F.one_hot(x_masked, num_classes=depth).float()
+    y_onehot = F.one_hot(y_sample, num_classes=depth - 1).float()
+
+    return x_onehot, y_onehot, mask_idx
+
+
+def build_onehot_dataset(haps, allele_values, min_mr=0.05, max_mr=0.15):
+    """Return masked one-hot inputs and labels."""
     allele_to_idx = {v: i for i, v in enumerate(allele_values)}
-    mask_idx = len(allele_values)
-    num_classes = len(allele_values)
+    depth = len(allele_values) + 1
     N, L = haps.shape
-    inputs = np.full((N, L), mask_idx, dtype=np.int64)
-    labels = np.zeros((N, L), dtype=np.int64)
+    inputs = torch.zeros(N, L, depth, dtype=torch.float32)
+    labels = torch.zeros(N, L, depth - 1, dtype=torch.float32)
     for i in range(N):
-        for j in range(L):
-            allele = haps[i, j]
-            idx = allele_to_idx[allele]
-            labels[i, j] = idx
-            if random.random() >= mask_prob:
-                inputs[i, j] = idx
-    return inputs, labels, mask_idx
+        ids = [allele_to_idx[a] for a in haps[i]]
+        x_onehot, y_onehot, _ = add_attention_mask(ids, ids, depth, min_mr, max_mr)
+        inputs[i] = x_onehot
+        labels[i] = y_onehot
+    return inputs, labels, depth
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description='Preprocess VCF to token dataset')
+    parser = argparse.ArgumentParser(description='Preprocess VCF to one-hot dataset')
     parser.add_argument('--input', required=True)
     parser.add_argument('--output', default='data/dataset.pt')
-    parser.add_argument('--mask_prob', type=float, default=0.15)
+    parser.add_argument('--min_mask_rate', type=float, default=0.05)
+    parser.add_argument('--max_mask_rate', type=float, default=0.15)
     args = parser.parse_args()
 
     haps, allele_values = read_vcf_haplotypes(args.input)
-    inputs, labels, mask_idx = build_token_dataset(
-        haps, allele_values, mask_prob=args.mask_prob
+    inputs, labels, depth = build_onehot_dataset(
+        haps,
+        allele_values,
+        min_mr=args.min_mask_rate,
+        max_mr=args.max_mask_rate,
     )
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     torch.save({
-        'inputs': torch.tensor(inputs, dtype=torch.long),
-        'labels': torch.tensor(labels, dtype=torch.long),
+        'inputs': inputs,
+        'labels': labels,
         'allele_values': allele_values,
-        'mask_idx': mask_idx,
-        'seq_len': inputs.shape[1]
+        'seq_len': inputs.shape[1],
+        'num_alleles': depth,
     }, args.output)
     print(
         f'Saved dataset to {args.output} with shape {inputs.shape} and '
-        f'{len(allele_values)} allele types (mask index {mask_idx})'
+        f'{len(allele_values)} allele types'
     )
 
 
