@@ -3,17 +3,34 @@ from torch import nn
 from transformers import LongformerModel, LongformerConfig
 
 
-class CatEmbeddings(nn.Module):
-    """Embedding layer for one-hot encoded categorical SNP input."""
+class RelPositionalEncoding(nn.Module):
+    """Sinusoidal positional encoding that generalizes to long sequences."""
 
-    def __init__(self, num_alleles: int, n_snps: int, embedding_dim: int):
+    def __init__(self, embedding_dim: int, max_length: int = 4096):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.max_length = max_length
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, embedding_dim, 2).float() / embedding_dim))
+        self.register_buffer("inv_freq", inv_freq)
+
+    def forward(self, seq_len: int) -> torch.Tensor:
+        t = torch.arange(seq_len, device=self.inv_freq.device).float()
+        sinusoid_inp = torch.outer(t, self.inv_freq)
+        pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=-1)
+        if pos_emb.size(-1) != self.embedding_dim:
+            pos_emb = torch.cat([pos_emb, pos_emb.new_zeros(seq_len, self.embedding_dim - pos_emb.size(-1))], dim=-1)
+        return pos_emb
+
+
+class CatEmbeddings(nn.Module):
+    """Embedding layer for one-hot encoded SNPs with sinusoidal relative positions."""
+
+    def __init__(self, num_alleles: int, embedding_dim: int, max_length: int):
         super().__init__()
         self.embedding = nn.Parameter(torch.empty(num_alleles, embedding_dim))
-        self.position_embedding = nn.Embedding(n_snps, embedding_dim)
-        self.n_snps = n_snps
+        self.pos_encoder = RelPositionalEncoding(embedding_dim, max_length)
 
         nn.init.xavier_uniform_(self.embedding)
-        nn.init.normal_(self.position_embedding.weight, mean=0.0, std=0.02)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, L, A) - one-hot encoded SNP alleles
@@ -22,8 +39,8 @@ class CatEmbeddings(nn.Module):
         x = x.to(dtype=self.embedding.dtype)
         allele_emb = torch.einsum("bla,ad->bld", x, self.embedding)
 
-        pos_ids = torch.arange(L, device=x.device).unsqueeze(0).expand(B, L)
-        pos_emb = self.position_embedding(pos_ids)
+        pos_emb = self.pos_encoder(L)
+        pos_emb = pos_emb.unsqueeze(0).expand(B, L, -1)
         return allele_emb + pos_emb
 
 
@@ -39,13 +56,16 @@ class LongformerMLMVAE(nn.Module):
         max_length=2048,
         attention_window=64,
         chunk_size=None,
+        latent_size=None,
     ):
         super().__init__()
         self.num_alleles = num_alleles
         self.num_classes = num_alleles - 1  # exclude mask channel
-        self.embed = CatEmbeddings(num_alleles, max_length, hidden_size)
+        self.embed = CatEmbeddings(num_alleles, hidden_size, max_length)
         self.dropout = nn.Dropout(0.1)
         self.norm = nn.LayerNorm(hidden_size)
+
+        self.latent_size = latent_size or hidden_size // 2
 
         config = LongformerConfig(
             vocab_size=1,  # unused but required
@@ -58,10 +78,10 @@ class LongformerMLMVAE(nn.Module):
             attention_window=[attention_window] * num_layers,
         )
         self.encoder = LongformerModel(config)
-        self.fc_mu = nn.Linear(hidden_size, hidden_size)
-        self.fc_logvar = nn.Linear(hidden_size, hidden_size)
+        self.fc_mu = nn.Linear(hidden_size, self.latent_size)
+        self.fc_logvar = nn.Linear(hidden_size, self.latent_size)
         self.decoder = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(self.latent_size, hidden_size),
             nn.ReLU(),
             nn.LayerNorm(hidden_size),
             nn.Linear(hidden_size, hidden_size),

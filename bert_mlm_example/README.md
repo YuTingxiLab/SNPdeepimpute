@@ -17,7 +17,7 @@ python preprocess.py --input data/synthetic_1000x1000.vcf --output data/dataset.
 
 ## Training
 
-Pretrain the model on the masked dataset. The model automatically adapts to the number of allele classes and outputs logits of shape `[batch, seq_len, num_classes]`. Training uses a custom VAE loss (cross entropy reconstruction plus KL term with annealing) and reports accuracy. For very long sequences you can specify `--chunk_size` so the model processes the SNPs in windows.
+Pretrain the model on the masked dataset. The model automatically adapts to the number of allele classes and outputs logits of shape `[batch, seq_len, num_classes]`. Training uses a beta‑VAE loss with optional Minimac‑R2 regularisation and KL annealing. Relative positional encodings help with long‑range dependencies and the latent dimension can be reduced for stronger compression. For very long sequences you can specify `--chunk_size` so the model processes the SNPs in windows.
 
 ```bash
 python train.py --epochs 2 --batch_size 8 --data_path data/dataset.pt

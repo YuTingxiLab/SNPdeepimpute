@@ -36,6 +36,10 @@ def train(
     max_position_embeddings=None,
     kl_anneal_epochs=2,
     chunk_size=None,
+    beta=1.0,
+    group_size=4,
+    latent_size=None,
+    use_r2_loss=True,
 ):
     dataset = SNPDataset(data_path)
     train_size = int(0.8 * len(dataset))
@@ -49,9 +53,10 @@ def train(
         num_alleles=dataset.num_alleles,
         max_length=max_position_embeddings or seq_len,
         chunk_size=chunk_size,
+        latent_size=latent_size,
     )
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    criterion = VAELoss()
+    criterion = VAELoss(beta=beta, use_r2_loss=use_r2_loss, group_size=group_size)
 
     best_val = float('inf')
     patience = 3
@@ -65,7 +70,7 @@ def train(
         for x, y in train_loader:
             mask = 1 - x[:, :, -1].long()
             logits, mu, logvar = model(x, attention_mask=mask)
-            loss, ce, kl = criterion(logits, y, mu, logvar, kl_weight=kl_weight)
+            loss, ce, kl = criterion(logits, y, mu, logvar, beta=beta * kl_weight)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -81,7 +86,7 @@ def train(
             for x, y in val_loader:
                 mask = 1 - x[:, :, -1].long()
                 logits, mu, logvar = model(x, attention_mask=mask)
-                loss, _, _ = criterion(logits, y, mu, logvar, kl_weight=1.0)
+                loss, _, _ = criterion(logits, y, mu, logvar, beta=beta)
                 val_loss += loss.item()
                 val_acc += accuracy(logits, y).item()
         val_loss /= len(val_loader)
