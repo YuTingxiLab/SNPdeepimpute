@@ -4,12 +4,28 @@ from transformers import LongformerModel, LongformerConfig
 
 
 class LongformerMLMVAE(nn.Module):
-    def __init__(self, input_dim, num_classes, hidden_size=128, num_layers=2,
-                 num_heads=4, max_length=1000, attention_window=64):
+    """Longformer-based VAE for SNP imputation with token embeddings."""
+
+    def __init__(
+        self,
+        vocab_size,
+        num_classes,
+        hidden_size=128,
+        num_layers=2,
+        num_heads=4,
+        max_length=2048,
+        attention_window=64,
+    ):
         super().__init__()
-        self.embed = nn.Linear(input_dim, hidden_size)
+        self.vocab_size = vocab_size
+        self.num_classes = num_classes
+        self.token_emb = nn.Embedding(vocab_size, hidden_size, padding_idx=0)
+        self.pos_emb = nn.Embedding(max_length, hidden_size)
+        self.dropout = nn.Dropout(0.1)
+        self.norm = nn.LayerNorm(hidden_size)
+
         config = LongformerConfig(
-            vocab_size=1,
+            vocab_size=vocab_size,
             pad_token_id=0,
             hidden_size=hidden_size,
             num_hidden_layers=num_layers,
@@ -21,11 +37,24 @@ class LongformerMLMVAE(nn.Module):
         self.encoder = LongformerModel(config)
         self.fc_mu = nn.Linear(hidden_size, hidden_size)
         self.fc_logvar = nn.Linear(hidden_size, hidden_size)
-        self.decoder = nn.Linear(hidden_size, num_classes)
+        self.decoder = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, num_classes),
+        )
+        self.max_length = max_length
 
-    def forward(self, inputs, attention_mask=None):
-        # inputs: [batch, seq_len, input_dim]
-        x = self.embed(inputs)
+    def forward(self, input_ids, attention_mask=None, position_ids=None):
+        if input_ids.size(1) > self.max_length:
+            raise ValueError(
+                f"Input sequence length {input_ids.size(1)} exceeds max_length {self.max_length}"
+            )
+        if position_ids is None:
+            position_ids = torch.arange(
+                input_ids.size(1), device=input_ids.device
+            ).unsqueeze(0)
+        x = self.token_emb(input_ids) + self.pos_emb(position_ids)
+        x = self.dropout(self.norm(x))
         outputs = self.encoder(inputs_embeds=x, attention_mask=attention_mask)
         h = outputs.last_hidden_state
         mu = self.fc_mu(h)

@@ -38,42 +38,48 @@ def read_vcf_haplotypes(path):
     return np.array(haplotypes, dtype=np.int64), allele_values
 
 
-def one_hot_encode(haps, allele_values, mask_prob=0.15):
-    """Return masked inputs and labels in one-hot form using allele values."""
+def build_token_dataset(haps, allele_values, mask_prob=0.15):
+    """Return masked input IDs and label IDs."""
     allele_to_idx = {v: i for i, v in enumerate(allele_values)}
+    mask_idx = len(allele_values)
     num_classes = len(allele_values)
     N, L = haps.shape
-    inputs = np.zeros((N, L, num_classes + 1), dtype=np.float32)
-    labels = np.zeros((N, L, num_classes), dtype=np.float32)
+    inputs = np.full((N, L), mask_idx, dtype=np.int64)
+    labels = np.zeros((N, L), dtype=np.int64)
     for i in range(N):
         for j in range(L):
             allele = haps[i, j]
             idx = allele_to_idx[allele]
-            labels[i, j, idx] = 1.0
-            if random.random() < mask_prob:
-                inputs[i, j, num_classes] = 1.0
-            else:
-                inputs[i, j, idx] = 1.0
-    return inputs, labels
+            labels[i, j] = idx
+            if random.random() >= mask_prob:
+                inputs[i, j] = idx
+    return inputs, labels, mask_idx
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description='Preprocess VCF to one-hot dataset')
+    parser = argparse.ArgumentParser(description='Preprocess VCF to token dataset')
     parser.add_argument('--input', required=True)
     parser.add_argument('--output', default='data/dataset.pt')
     parser.add_argument('--mask_prob', type=float, default=0.15)
     args = parser.parse_args()
 
     haps, allele_values = read_vcf_haplotypes(args.input)
-    inputs, labels = one_hot_encode(haps, allele_values, mask_prob=args.mask_prob)
+    inputs, labels, mask_idx = build_token_dataset(
+        haps, allele_values, mask_prob=args.mask_prob
+    )
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     torch.save({
-        'inputs': torch.tensor(inputs),
-        'labels': torch.tensor(labels),
-        'allele_values': allele_values
+        'inputs': torch.tensor(inputs, dtype=torch.long),
+        'labels': torch.tensor(labels, dtype=torch.long),
+        'allele_values': allele_values,
+        'mask_idx': mask_idx,
+        'seq_len': inputs.shape[1]
     }, args.output)
-    print(f'Saved dataset to {args.output} with shape {inputs.shape} and {len(allele_values)} allele types')
+    print(
+        f'Saved dataset to {args.output} with shape {inputs.shape} and '
+        f'{len(allele_values)} allele types (mask index {mask_idx})'
+    )
 
 
 if __name__ == '__main__':

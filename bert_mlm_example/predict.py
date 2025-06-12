@@ -1,24 +1,34 @@
 import torch
 from model import LongformerMLMVAE
-from preprocess import read_vcf_haplotypes, one_hot_encode
+from preprocess import read_vcf_haplotypes, build_token_dataset
 
 
-def load_model(model_path, input_dim, num_classes, seq_len):
-    model = LongformerMLMVAE(input_dim=input_dim, num_classes=num_classes, max_length=seq_len)
+def load_model(model_path, vocab_size, num_classes, seq_len):
+    model = LongformerMLMVAE(vocab_size=vocab_size, num_classes=num_classes, max_length=seq_len)
     state = torch.load(model_path)
     model.load_state_dict(state)
     model.eval()
     return model
 
 
-def fill_vcf(vcf_path, dataset_path='data/dataset.pt', output_path='filled.vcf', model_path='models/mlm_model.pt'):
+def fill_vcf(
+    vcf_path,
+    dataset_path='data/dataset.pt',
+    output_path='filled.vcf',
+    model_path='models/mlm_model.pt',
+):
     haps, allele_values = read_vcf_haplotypes(vcf_path)
     data = torch.load(dataset_path)
     train_alleles = data['allele_values']
-    inputs, _ = one_hot_encode(haps, train_alleles, mask_prob=0.0)
-    inputs = torch.tensor(inputs)
-    mask = (inputs.sum(-1) != 0).long()
-    model = load_model(model_path, input_dim=inputs.size(-1), num_classes=len(train_alleles), seq_len=inputs.size(1))
+    inputs, _, mask_idx = build_token_dataset(haps, train_alleles, mask_prob=0.0)
+    inputs = torch.tensor(inputs, dtype=torch.long)
+    mask = (inputs != mask_idx).long()
+    model = load_model(
+        model_path,
+        vocab_size=len(train_alleles) + 1,
+        num_classes=len(train_alleles),
+        seq_len=inputs.size(1),
+    )
     with torch.no_grad():
         logits, _, _ = model(inputs, attention_mask=mask)
     preds = logits.argmax(dim=-1)
