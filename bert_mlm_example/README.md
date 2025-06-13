@@ -35,26 +35,10 @@ python predict.py --vcf data/synthetic_1000x1000.vcf --dataset data/dataset.pt -
 
 The output file will contain genotypes for all samples with masked sites completed.
 
-## Text Masked Language Modeling
+## Chunked inference with global tokens
 
-This folder also provides a minimal BERT-style implementation for generic masked language modeling on text.
-
-### Preprocessing text
-
-```
-python preprocess_text.py --input sample_text.txt --output data/dataset.json --tokenizer data/tokenizer.json
-```
-
-### Training
-
-```
-python train_bert.py --data_path data/dataset.json --tokenizer_path data/tokenizer.json --epochs 2 --batch_size 2
-```
-
-### Filling masks
-
-```
-python predict_bert.py "hello [MASK]" --model_path models/bert_mlm.pth --tokenizer_path data/tokenizer.json
-```
-
-These commands build a vocabulary from `sample_text.txt`, train a small BERT model and then predict the masked word.
+When `--chunk_size` is provided, the model splits long SNP sequences into overlapping
+chunks. Each chunk includes a learnable **global token** that interacts with other
+chunks through an additional Transformer layer. After this global exchange, every
+chunk attends back to its updated global token before producing the final output.
+Overlapping regions are averaged so information flows across chunk boundaries.

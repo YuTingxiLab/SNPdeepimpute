@@ -57,6 +57,7 @@ class LongformerMLMVAE(nn.Module):
         attention_window=64,
         chunk_size=None,
         latent_size=None,
+        overlap=64,
     ):
         super().__init__()
         self.num_alleles = num_alleles
@@ -78,6 +79,19 @@ class LongformerMLMVAE(nn.Module):
             attention_window=[attention_window] * num_layers,
         )
         self.encoder = LongformerModel(config)
+
+        self.global_token = nn.Parameter(torch.zeros(1, 1, hidden_size))
+        self.anchor_token = nn.Parameter(torch.zeros(1, 1, hidden_size))
+        nn.init.normal_(self.global_token, std=0.02)
+        nn.init.normal_(self.anchor_token, std=0.02)
+        self.global_interactor = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=hidden_size, nhead=num_heads, batch_first=True
+            ),
+            num_layers=1,
+        )
+        self.cross_attn = nn.MultiheadAttention(hidden_size, num_heads, batch_first=True)
+
         self.fc_mu = nn.Linear(hidden_size, self.latent_size)
         self.fc_logvar = nn.Linear(hidden_size, self.latent_size)
         self.decoder = nn.Sequential(
@@ -91,13 +105,27 @@ class LongformerMLMVAE(nn.Module):
         )
         self.max_length = max_length
         self.chunk_size = chunk_size
+        self.overlap = overlap
 
-    def _forward_chunk(self, x, attention_mask):
+    def encode_chunk(self, x, attention_mask=None):
+        B, L, _ = x.shape
         emb = self.dropout(self.norm(self.embed(x)))
-        outputs = self.encoder(inputs_embeds=emb, attention_mask=attention_mask)
+        g = self.global_token.expand(B, 1, -1)
+        emb = torch.cat([g, emb], dim=1)
+        if attention_mask is not None:
+            mask = torch.cat(
+                [torch.ones(B, 1, device=x.device, dtype=torch.long), attention_mask],
+                dim=1,
+            )
+        else:
+            mask = torch.ones(B, L + 1, device=x.device, dtype=torch.long)
+        outputs = self.encoder(inputs_embeds=emb, attention_mask=mask)
         h = outputs.last_hidden_state
-        mu = self.fc_mu(h)
-        logvar = self.fc_logvar(h)
+        return h[:, 1:], h[:, :1]
+
+    def decode_tokens(self, tokens):
+        mu = self.fc_mu(tokens)
+        logvar = self.fc_logvar(tokens)
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         z = mu + eps * std
@@ -110,25 +138,57 @@ class LongformerMLMVAE(nn.Module):
             raise ValueError(
                 f"Input length {seq_len} exceeds max_length {self.max_length} and no chunk_size provided"
             )
+
         if self.chunk_size is None or seq_len <= self.chunk_size:
             if attention_mask is None:
                 attention_mask = torch.ones(x.size(0), seq_len, device=x.device, dtype=torch.long)
-            return self._forward_chunk(x, attention_mask)
+            tokens, g = self.encode_chunk(x, attention_mask)
+            g = self.global_interactor(torch.cat([self.anchor_token.expand(x.size(0), 1, -1), g], dim=1))[:, 1:]
+            attn_out, _ = self.cross_attn(tokens, g, g)
+            tokens = tokens + attn_out
+            return self.decode_tokens(tokens)
 
-        logits_list = []
-        mu_list = []
-        logvar_list = []
-        for start in range(0, seq_len, self.chunk_size):
+        stride = self.chunk_size - self.overlap
+        if stride <= 0:
+            raise ValueError("chunk_size must be larger than overlap")
+
+        chunks = []
+        globals_list = []
+        starts = []
+        for start in range(0, seq_len, stride):
             end = min(start + self.chunk_size, seq_len)
-            x_chunk = x[:, start:end, :]
-            mask_chunk = (
-                attention_mask[:, start:end] if attention_mask is not None else None
-            )
-            out_l, out_mu, out_logvar = self._forward_chunk(x_chunk, mask_chunk)
-            logits_list.append(out_l)
-            mu_list.append(out_mu)
-            logvar_list.append(out_logvar)
-        logits = torch.cat(logits_list, dim=1)
-        mu = torch.cat(mu_list, dim=1)
-        logvar = torch.cat(logvar_list, dim=1)
-        return logits, mu, logvar
+            chunk_x = x[:, start:end, :]
+            mask_chunk = attention_mask[:, start:end] if attention_mask is not None else None
+            t, g = self.encode_chunk(chunk_x, mask_chunk)
+            chunks.append(t)
+            globals_list.append(g)
+            starts.append(start)
+            if end == seq_len:
+                break
+
+        globals_cat = torch.cat(globals_list, dim=1)
+        globals_updated = self.global_interactor(
+            torch.cat([self.anchor_token.expand(x.size(0), 1, -1), globals_cat], dim=1)
+        )[:, 1:]
+
+        out_logits = torch.zeros(x.size(0), seq_len, self.num_classes, device=x.device)
+        out_mu = torch.zeros(x.size(0), seq_len, self.latent_size, device=x.device)
+        out_logvar = torch.zeros(x.size(0), seq_len, self.latent_size, device=x.device)
+        counts = torch.zeros(seq_len, device=x.device)
+
+        for i, (tokens, start) in enumerate(zip(chunks, starts)):
+            g = globals_updated[:, i : i + 1]
+            attn_out, _ = self.cross_attn(tokens, g, g)
+            tokens_fused = tokens + attn_out
+            logits, mu, logvar = self.decode_tokens(tokens_fused)
+            end = min(start + tokens.size(1), seq_len)
+            out_logits[:, start:end] += logits[:, : end - start]
+            out_mu[:, start:end] += mu[:, : end - start]
+            out_logvar[:, start:end] += logvar[:, : end - start]
+            counts[start:end] += 1
+
+        counts = counts.clamp_min(1.0)
+        out_logits = out_logits / counts.unsqueeze(0).unsqueeze(-1)
+        out_mu = out_mu / counts.unsqueeze(0).unsqueeze(-1)
+        out_logvar = out_logvar / counts.unsqueeze(0).unsqueeze(-1)
+        return out_logits, out_mu, out_logvar

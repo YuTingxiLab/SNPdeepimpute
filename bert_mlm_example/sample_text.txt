@@ -1,4 +1,0 @@
-Hello world. This is a small dataset for BERT masked language modeling.
-BERT is a transformer-based model.
-It learns to predict masked words in a sentence.
-Machine learning models can learn from data.
