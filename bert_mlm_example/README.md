@@ -35,6 +35,8 @@ python predict.py --vcf data/synthetic_1000x1000.vcf --dataset data/dataset.pt -
 
 The output file will contain genotypes for all samples with masked sites completed.
 
+The model replaces standard LayerNorm with **RMSNorm** for stability and efficiency.
+
 ## Chunked inference with global tokens
 
 When `--chunk_size` is provided, the model splits long SNP sequences into overlapping

@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from transformers import LongformerModel, LongformerConfig
+from .rmsnorm import RMSNorm, RMSNormTransformerEncoderLayer
 
 
 class RelPositionalEncoding(nn.Module):
@@ -64,7 +65,7 @@ class LongformerMLMVAE(nn.Module):
         self.num_classes = num_alleles - 1  # exclude mask channel
         self.embed = CatEmbeddings(num_alleles, hidden_size, max_length)
         self.dropout = nn.Dropout(0.1)
-        self.norm = nn.LayerNorm(hidden_size)
+        self.norm = RMSNorm(hidden_size, eps=1e-8)
 
         self.latent_size = latent_size or hidden_size // 2
 
@@ -85,8 +86,12 @@ class LongformerMLMVAE(nn.Module):
         nn.init.normal_(self.global_token, std=0.02)
         nn.init.normal_(self.anchor_token, std=0.02)
         self.global_interactor = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=hidden_size, nhead=num_heads, batch_first=True
+            RMSNormTransformerEncoderLayer(
+                d_model=hidden_size,
+                nhead=num_heads,
+                dim_feedforward=hidden_size * 4,
+                dropout=0.1,
+                batch_first=True,
             ),
             num_layers=1,
         )
@@ -97,10 +102,10 @@ class LongformerMLMVAE(nn.Module):
         self.decoder = nn.Sequential(
             nn.Linear(self.latent_size, hidden_size),
             nn.ReLU(),
-            nn.LayerNorm(hidden_size),
+            RMSNorm(hidden_size, eps=1e-8),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.LayerNorm(hidden_size),
+            RMSNorm(hidden_size, eps=1e-8),
             nn.Linear(hidden_size, self.num_classes),
         )
         self.max_length = max_length
